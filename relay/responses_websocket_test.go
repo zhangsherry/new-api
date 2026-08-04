@@ -13,6 +13,7 @@ import (
 	"github.com/QuantumNous/new-api/relaykit/dto"
 	"github.com/QuantumNous/new-api/relaykit/types"
 
+	"github.com/gin-gonic/gin"
 	"github.com/gorilla/websocket"
 )
 
@@ -312,6 +313,51 @@ func TestObserveUpstreamFailedReleasesCurrent(t *testing.T) {
 	}
 	if committed == nil || *committed {
 		t.Fatalf("commit success = %v, want false", committed)
+	}
+}
+
+func TestResponsesWSMirrorsCPACloseCodes(t *testing.T) {
+	tests := []struct {
+		name   string
+		code   int
+		reason string
+	}{
+		{name: "replay required", code: websocket.CloseServiceRestart, reason: "upstream requires HTTP replay"},
+		{name: "message too big", code: websocket.CloseMessageTooBig, reason: "context window exceeded"},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			downstreamClient, downstreamServer, cleanupDownstream := newTestWebSocketPair(t)
+			defer cleanupDownstream()
+			upstreamClient, upstreamServer, cleanupUpstream := newTestWebSocketPair(t)
+			defer cleanupUpstream()
+			ginContext, _ := gin.CreateTestContext(httptest.NewRecorder())
+			ginContext.Request = httptest.NewRequest(http.MethodGet, "/v1/responses", nil)
+
+			session := &responsesWSSession{
+				c:      ginContext,
+				client: downstreamServer,
+				target: upstreamClient,
+			}
+			session.startTargetReader()
+
+			payload := websocket.FormatCloseMessage(tt.code, tt.reason)
+			if err := upstreamServer.WriteControl(websocket.CloseMessage, payload, time.Now().Add(time.Second)); err != nil {
+				t.Fatalf("write upstream close: %v", err)
+			}
+			if err := downstreamClient.SetReadDeadline(time.Now().Add(2 * time.Second)); err != nil {
+				t.Fatalf("set downstream deadline: %v", err)
+			}
+			_, _, err := downstreamClient.ReadMessage()
+			var closeErr *websocket.CloseError
+			if !errors.As(err, &closeErr) {
+				t.Fatalf("downstream error = %T %v, want websocket close", err, err)
+			}
+			if closeErr.Code != tt.code || closeErr.Text != tt.reason {
+				t.Fatalf("downstream close = %d %q, want %d %q", closeErr.Code, closeErr.Text, tt.code, tt.reason)
+			}
+		})
 	}
 }
 

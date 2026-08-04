@@ -570,7 +570,7 @@ func (s *responsesWSSession) startTargetReader() {
 					logger.LogError(s.c, "responses websocket upstream read failed: "+err.Error())
 				}
 				s.failCurrent()
-				_ = s.client.Close()
+				s.closeClientFromUpstream(err)
 				return
 			}
 			s.observeUpstreamMessage(message)
@@ -582,6 +582,19 @@ func (s *responsesWSSession) startTargetReader() {
 			}
 		}
 	}()
+}
+
+func (s *responsesWSSession) closeClientFromUpstream(err error) {
+	s.closeOnce.Do(func() {
+		var closeErr *websocket.CloseError
+		if errors.As(err, &closeErr) {
+			deadline := time.Now().Add(time.Second)
+			payload := websocket.FormatCloseMessage(closeErr.Code, closeErr.Text)
+			_ = s.client.WriteControl(websocket.CloseMessage, payload, deadline)
+		}
+		s.closeTarget()
+		_ = s.client.Close()
+	})
 }
 
 func (s *responsesWSSession) observeUpstreamMessage(message []byte) {
