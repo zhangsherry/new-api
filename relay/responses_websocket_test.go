@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"github.com/QuantumNous/new-api/common"
+	appconstant "github.com/QuantumNous/new-api/constant"
 	relaycommon "github.com/QuantumNous/new-api/relay/common"
 	"github.com/QuantumNous/new-api/relaykit/dto"
 	"github.com/QuantumNous/new-api/relaykit/types"
@@ -87,6 +88,31 @@ func TestNormalizeResponsesWSCreateEventFlat(t *testing.T) {
 	}
 	if req.StreamOptions != nil {
 		t.Fatalf("stream_options = %#v, want nil", req.StreamOptions)
+	}
+	if string(create.RawEvent) != string(message) {
+		t.Fatalf("raw event changed:\n%s", create.RawEvent)
+	}
+}
+
+func TestBuildResponsesWSCreatePayloadPreservesFlatEventInPassThroughMode(t *testing.T) {
+	c, _ := gin.CreateTestContext(httptest.NewRecorder())
+	common.SetContextKey(c, appconstant.ContextKeyChannelType, appconstant.ChannelTypeOpenAI)
+	common.SetContextKey(c, appconstant.ContextKeyOriginalModel, "gpt-5.3-codex")
+	common.SetContextKey(c, appconstant.ContextKeyChannelSetting, dto.ChannelSettings{PassThroughBodyEnabled: true})
+
+	raw := common.RawMessage("{\n  \"type\": \"response.create\", \"model\": \"gpt-5.3-codex\",\n  \"future_cpa_field\": {\"enabled\":true}, \"stream\": true\n}")
+	var req dto.OpenAIResponsesRequest
+	if err := common.Unmarshal(raw, &req); err != nil {
+		t.Fatalf("unmarshal request: %v", err)
+	}
+	relayInfo := &relaycommon.RelayInfo{OriginModelName: req.Model}
+
+	got, apiErr := buildResponsesWSCreatePayload(c, relayInfo, req, nil, raw)
+	if apiErr != nil {
+		t.Fatalf("buildResponsesWSCreatePayload() error = %v", apiErr)
+	}
+	if string(got) != string(raw) {
+		t.Fatalf("pass-through event changed:\ngot:  %s\nwant: %s", got, raw)
 	}
 }
 

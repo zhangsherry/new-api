@@ -22,6 +22,7 @@ import (
 	"github.com/QuantumNous/new-api/relaykit/types"
 	"github.com/QuantumNous/new-api/service"
 	"github.com/QuantumNous/new-api/setting"
+	"github.com/QuantumNous/new-api/setting/model_setting"
 	"github.com/QuantumNous/new-api/setting/ratio_setting"
 
 	"github.com/gin-gonic/gin"
@@ -37,8 +38,10 @@ type responsesWSCreateEvent struct {
 }
 
 type responsesWSCreateRequest struct {
-	Request  dto.OpenAIResponsesRequest
-	Generate common.RawMessage
+	Request     dto.OpenAIResponsesRequest
+	Generate    common.RawMessage
+	RawEvent    common.RawMessage
+	MessageType int
 }
 
 type responsesWSErrorEvent struct {
@@ -115,6 +118,7 @@ func ResponsesWebSocketHelper(c *gin.Context, client *websocket.Conn) *types.New
 			session.sendError(eventID, newResponsesWSInvalidRequestError(errors.New("model is required")))
 			continue
 		}
+		create.MessageType = messageType
 		if err := session.handleResponseCreate(create, eventID); err != nil {
 			session.sendError(eventID, err)
 		}
@@ -156,7 +160,9 @@ func normalizeResponsesWSCreateEvent(message []byte) (responsesWSCreateRequest, 
 	}
 
 	payload := event.Request
+	var rawEvent common.RawMessage
 	if len(payload) == 0 {
+		rawEvent = message
 		if err := common.Unmarshal(message, &raw); err != nil {
 			return responsesWSCreateRequest{}, event.EventID, err
 		}
@@ -197,6 +203,7 @@ func normalizeResponsesWSCreateEvent(message []byte) (responsesWSCreateRequest, 
 	return responsesWSCreateRequest{
 		Request:  req,
 		Generate: generate,
+		RawEvent: rawEvent,
 	}, event.EventID, nil
 }
 
@@ -244,7 +251,7 @@ func (s *responsesWSSession) handleResponseCreate(create responsesWSCreateReques
 			types.ErrOptionWithSkipRetry(),
 		)
 	}
-	if err := s.writeTarget(websocket.TextMessage, payload); err != nil {
+	if err := s.writeTarget(create.MessageType, payload); err != nil {
 		return s.handleTargetWriteFailureWithState(state, err)
 	}
 	return nil
@@ -340,7 +347,7 @@ func (s *responsesWSSession) connectAndSendFirst(create responsesWSCreateRequest
 			commitRate(false)
 			return types.NewErrorWithStatusCode(errors.New("another response.create is already in progress on this websocket connection"), types.ErrorCodeInvalidRequest, http.StatusConflict, types.ErrOptionWithSkipRetry())
 		}
-		if err := s.writeTarget(websocket.TextMessage, payload); err != nil {
+		if err := s.writeTarget(create.MessageType, payload); err != nil {
 			s.finishCall(state, false)
 			s.closeTarget()
 			apiErr = types.NewError(err, types.ErrorCodeBadResponse)
@@ -424,7 +431,7 @@ func (s *responsesWSSession) prepareCall(create responsesWSCreateRequest, commit
 		}
 	}
 
-	payload, apiErr := buildResponsesWSCreatePayload(s.c, relayInfo, req, create.Generate)
+	payload, apiErr := buildResponsesWSCreatePayload(s.c, relayInfo, req, create.Generate, create.RawEvent)
 	if apiErr != nil {
 		if relayInfo.Billing != nil {
 			relayInfo.Billing.Refund(s.c)
@@ -439,7 +446,7 @@ func (s *responsesWSSession) prepareCall(create responsesWSCreateRequest, commit
 	}, payload, nil
 }
 
-func buildResponsesWSCreatePayload(c *gin.Context, relayInfo *relaycommon.RelayInfo, req dto.OpenAIResponsesRequest, generate common.RawMessage) ([]byte, *types.NewAPIError) {
+func buildResponsesWSCreatePayload(c *gin.Context, relayInfo *relaycommon.RelayInfo, req dto.OpenAIResponsesRequest, generate common.RawMessage, rawEvent common.RawMessage) ([]byte, *types.NewAPIError) {
 	relayInfo.InitChannelMeta(c)
 	request, err := common.DeepCopy(&req)
 	if err != nil {
@@ -447,6 +454,9 @@ func buildResponsesWSCreatePayload(c *gin.Context, relayInfo *relaycommon.RelayI
 	}
 	if err := helper.ModelMappedHelper(c, relayInfo, request); err != nil {
 		return nil, types.NewError(err, types.ErrorCodeChannelModelMappedError, types.ErrOptionWithSkipRetry())
+	}
+	if (model_setting.GetGlobalSettings().PassThroughRequestEnabled || relayInfo.ChannelSetting.PassThroughBodyEnabled) && len(rawEvent) > 0 {
+		return rawEvent, nil
 	}
 
 	adaptor := GetAdaptor(relayInfo.ApiType)
