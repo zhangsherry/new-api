@@ -1,0 +1,91 @@
+name: Publish CPA WebSocket image
+
+on:
+  workflow_dispatch:
+
+concurrency:
+  group: publish-cpa-ws
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+  packages: write
+
+env:
+  REGISTRY: ghcr.io
+  IMAGE_NAME: ${{ github.repository }}
+
+jobs:
+  build:
+    name: Build and publish linux/amd64
+    if: github.ref == 'refs/heads/cpa-ws'
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+
+    steps:
+      - name: Check out dispatched commit
+        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+
+      - name: Set image version
+        id: version
+        shell: bash
+        run: |
+          SHORT_SHA="${GITHUB_SHA::8}"
+          VERSION="cpa-ws-$(date -u +'%Y%m%d')-${SHORT_SHA}"
+          printf '%s\n' "$VERSION" > VERSION
+          echo "short_sha=$SHORT_SHA" >> "$GITHUB_OUTPUT"
+          echo "version=$VERSION" >> "$GITHUB_OUTPUT"
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@bb05f3f5519dd87d3ba754cc423b652a5edd6d2c # v4.2.0
+
+      - name: Log in to GitHub Container Registry
+        uses: docker/login-action@c99871dec2022cc055c062a10cc1a1310835ceb4 # v4.3.0
+        with:
+          registry: ${{ env.REGISTRY }}
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Extract image metadata
+        id: meta
+        uses: docker/metadata-action@dc802804100637a589fabce1cb79ff13a1411302 # v6.2.0
+        with:
+          images: ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}
+          flavor: latest=false
+          tags: |
+            type=raw,value=cpa-ws
+            type=raw,value=sha-${{ steps.version.outputs.short_sha }}
+          labels: |
+            org.opencontainers.image.version=${{ steps.version.outputs.version }}
+
+      - name: Build and push image
+        id: build
+        uses: docker/build-push-action@53b7df96c91f9c12dcc8a07bcb9ccacbed38856a # v7.3.0
+        with:
+          context: .
+          platforms: linux/amd64
+          push: true
+          tags: ${{ steps.meta.outputs.tags }}
+          labels: ${{ steps.meta.outputs.labels }}
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+          provenance: mode=max
+          sbom: true
+
+      - name: Publish summary
+        env:
+          IMAGE: ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}
+          SHORT_SHA: ${{ steps.version.outputs.short_sha }}
+          VERSION: ${{ steps.version.outputs.version }}
+          DIGEST: ${{ steps.build.outputs.digest }}
+        run: |
+          {
+            echo "### Published CPA WebSocket image"
+            echo
+            echo "- Image: \`${IMAGE}\`"
+            echo "- Moving tag: \`cpa-ws\`"
+            echo "- Immutable tag: \`sha-${SHORT_SHA}\`"
+            echo "- Application version: \`${VERSION}\`"
+            echo "- Platform: \`linux/amd64\`"
+            echo "- Digest: \`${DIGEST}\`"
+          } >> "$GITHUB_STEP_SUMMARY"
