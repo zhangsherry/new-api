@@ -114,10 +114,6 @@ func ResponsesWebSocketHelper(c *gin.Context, client *websocket.Conn) *types.New
 			session.sendError("", newResponsesWSInvalidRequestError(err))
 			continue
 		}
-		if create.Request.Model == "" {
-			session.sendError(eventID, newResponsesWSInvalidRequestError(errors.New("model is required")))
-			continue
-		}
 		create.MessageType = messageType
 		if err := session.handleResponseCreate(create, eventID); err != nil {
 			session.sendError(eventID, err)
@@ -209,14 +205,12 @@ func normalizeResponsesWSCreateEvent(message []byte) (responsesWSCreateRequest, 
 
 func (s *responsesWSSession) handleResponseCreate(create responsesWSCreateRequest, eventID string) *types.NewAPIError {
 	req := create.Request
-	if s.lockedModel != "" && req.Model != s.lockedModel {
-		return types.NewErrorWithStatusCode(
-			fmt.Errorf("responses websocket connection is locked to model %q; got %q", s.lockedModel, req.Model),
-			types.ErrorCodeInvalidRequest,
-			http.StatusBadRequest,
-			types.ErrOptionWithSkipRetry(),
-		)
+	model, err := resolveResponsesWSModel(req.Model, s.lockedModel)
+	if err != nil {
+		return newResponsesWSInvalidRequestError(err)
 	}
+	req.Model = model
+	create.Request = req
 
 	if s.hasCurrent() {
 		return types.NewErrorWithStatusCode(
@@ -255,6 +249,19 @@ func (s *responsesWSSession) handleResponseCreate(create responsesWSCreateReques
 		return s.handleTargetWriteFailureWithState(state, err)
 	}
 	return nil
+}
+
+func resolveResponsesWSModel(requestModel, lockedModel string) (string, error) {
+	if requestModel == "" {
+		if lockedModel == "" {
+			return "", errors.New("model is required")
+		}
+		return lockedModel, nil
+	}
+	if lockedModel != "" && requestModel != lockedModel {
+		return "", fmt.Errorf("responses websocket connection is locked to model %q; got %q", lockedModel, requestModel)
+	}
+	return requestModel, nil
 }
 
 func (s *responsesWSSession) handleControlEventWriteFailure(err error) *types.NewAPIError {

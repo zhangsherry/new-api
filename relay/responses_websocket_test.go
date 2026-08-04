@@ -100,11 +100,12 @@ func TestBuildResponsesWSCreatePayloadPreservesFlatEventInPassThroughMode(t *tes
 	common.SetContextKey(c, appconstant.ContextKeyOriginalModel, "gpt-5.3-codex")
 	common.SetContextKey(c, appconstant.ContextKeyChannelSetting, dto.ChannelSettings{PassThroughBodyEnabled: true})
 
-	raw := common.RawMessage("{\n  \"type\": \"response.create\", \"model\": \"gpt-5.3-codex\",\n  \"future_cpa_field\": {\"enabled\":true}, \"stream\": true\n}")
+	raw := common.RawMessage("{\n  \"type\": \"response.create\",\n  \"future_cpa_field\": {\"enabled\":true}, \"stream\": true\n}")
 	var req dto.OpenAIResponsesRequest
 	if err := common.Unmarshal(raw, &req); err != nil {
 		t.Fatalf("unmarshal request: %v", err)
 	}
+	req.Model = "gpt-5.3-codex"
 	relayInfo := &relaycommon.RelayInfo{OriginModelName: req.Model}
 
 	got, apiErr := buildResponsesWSCreatePayload(c, relayInfo, req, nil, raw)
@@ -209,6 +210,34 @@ func TestResponsesWSInvalidRequestErrorUsesBadRequestStatus(t *testing.T) {
 	}
 	if data.Status != http.StatusBadRequest {
 		t.Fatalf("status = %d, want %d", data.Status, http.StatusBadRequest)
+	}
+}
+
+func TestResolveResponsesWSModel(t *testing.T) {
+	tests := []struct {
+		name         string
+		requestModel string
+		lockedModel  string
+		want         string
+		wantErr      bool
+	}{
+		{name: "first create requires model", wantErr: true},
+		{name: "first create accepts model", requestModel: "gpt-5.3-codex", want: "gpt-5.3-codex"},
+		{name: "follow-up inherits model", lockedModel: "gpt-5.3-codex", want: "gpt-5.3-codex"},
+		{name: "follow-up accepts same model", requestModel: "gpt-5.3-codex", lockedModel: "gpt-5.3-codex", want: "gpt-5.3-codex"},
+		{name: "follow-up rejects different model", requestModel: "gpt-5.3-codex-spark", lockedModel: "gpt-5.3-codex", wantErr: true},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got, err := resolveResponsesWSModel(tt.requestModel, tt.lockedModel)
+			if (err != nil) != tt.wantErr {
+				t.Fatalf("resolveResponsesWSModel() error = %v, wantErr %v", err, tt.wantErr)
+			}
+			if got != tt.want {
+				t.Fatalf("resolveResponsesWSModel() = %q, want %q", got, tt.want)
+			}
+		})
 	}
 }
 
